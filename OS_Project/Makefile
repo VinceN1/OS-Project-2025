@@ -1,11 +1,14 @@
-$(info DEBUG: Reading the NEW, FIXED Makefile version!)
+# DEBUG: Reading the NEW, FIXED Makefile version!
+
 ASM = nasm
-# Define directories for clarity, but use hardcoded path in rules if variables fail
-SRC_DIR := src
 BUILD_DIR := build
 
-BIN = $(BUILD_DIR)/main.bin
+# Define required file names using hardcoded paths for safety
+BOOTLOADER_BIN = $(BUILD_DIR)/bootloader.bin
+KERNEL_BIN = $(BUILD_DIR)/kernel.bin
 IMG = $(BUILD_DIR)/main.img
+
+# --- 1. Top-Level Targets ---
 
 # Rule to ensure the build directory exists
 $(BUILD_DIR):
@@ -13,56 +16,41 @@ $(BUILD_DIR):
 
 all: $(IMG)
 
-# Assemble main.asm into the binary. 
-# We hardcode 'src/main.asm' here because the variable $(SRC_DIR) is failing to expand correctly.
-$(BIN): src/main.asm | $(BUILD_DIR)
-	@echo "Assembling src/main.asm..."
+# --- 2. Final Floppy Image Rule ---
+
+# The final image depends on the built bootloader and kernel
+$(IMG): $(BOOTLOADER_BIN) $(KERNEL_BIN) | $(BUILD_DIR)
+	@echo "Creating FAT12 floppy image..."
+	# 1. Create a raw 1.44MB disk image, filling it with zeros and defining the count
+	dd if=/dev/zero of=$@ bs=512 count=2880
+	# 2. Format the image as FAT12
+	mkfs.fat -F 12 -n "PAXOS" $@
+	# 3. Write the bootloader to the first sector (conv=notrunc preserves the FAT filesystem)
+	dd if=$(BOOTLOADER_BIN) of=$@ conv=notrunc
+	# 4. Copy the kernel onto the formatted filesystem
+	mcopy -i $@ $(KERNEL_BIN) "::KERNEL.BIN"
+
+# --- 3. Component Build Rules (Hardcoded Paths) ---
+
+# Build the Bootloader
+$(BOOTLOADER_BIN): src/bootloader/boot.asm | $(BUILD_DIR)
+	@echo "Assembling Bootloader: src/bootloader/boot.asm"
 	$(ASM) $< -f bin -o $@
 
-# Create floppy image
-$(IMG): $(BIN)
-	@echo "Creating floppy image..."
-	cp $< $@
-	truncate -s 1440k $@
+# Build the Kernel
+$(KERNEL_BIN): src/kernel/main.asm | $(BUILD_DIR)
+	@echo "Assembling Kernel: src/kernel/main.asm"
+	$(ASM) $< -f bin -o $@
 
-#
-#Floppy Image
-#
+# --- 4. Utility Targets ---
 
-floopy_image: $(BUILD_DIR)/main.img
-$(BUILD_DIR)/main.img: bootloader kernel
-	dd if=/dev/zero of=$(BUILD_DIR)/main.img bs=512
-	count=2880
-	mkfs.fat -F 12 -n "PAXOS" $(BUILD_DIR)/main.img
-	dd if=$(BUILD_DIR)/bootloader.bin of =$(BUILD_DIR)/
-	main.img conv=notrunc
-	mcopy -i $(BUILD_DIR)/main.img $(BUILD_DIR)/
-	kernel.bin "::kernel.bin"
-#
-#Bootloader
-#
-bootloader: $(BUILD_DIR)/bootloader.bin
-$(BUILD_DIR)/bootloader.bin:
-	$(ASM) $(SRC_DIR)/bootloader/boot.asm -f bin -o $
-	(BUILD_DIR)/bootloader.bin
-
-#
-#Kernal
-#
-kernel: $(BUILD_DIR)/kernel.bin
-	$(ASM) $(SRC_DIR)/kernel/main.asm -f bin -o $
-	(BUILD_DIR)/kernel.bin
-
-
-# Run in QEMU
 .PHONY: run
 run: $(IMG)
-# 	qemu-system-i386 -fda $(IMG)
+# 	@echo "Starting QEMU..."
+# 	qemu-system-i386 -fda $(IMG) -nographic
 
-# Clean only the files this Makefile creates
 .PHONY: clean
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -f $(BIN) $(IMG)
-	# Safely remove the build directory if it's empty
+	rm -f $(BOOTLOADER_BIN) $(KERNEL_BIN) $(IMG)
 	-rmdir $(BUILD_DIR) 2> /dev/null || true
